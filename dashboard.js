@@ -1,0 +1,178 @@
+// ===============================
+// CONFIGURAR SUPABASE
+// ===============================
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.42.5/+esm";
+
+const SUPABASE_URL = "https://fnatoebluaghqsomwzyx.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuYXRvZWJsdWFnaHFzb213enl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUzOTEyMzAsImV4cCI6MjA4MDk2NzIzMH0.xoXIZcUouaxrc8hp07h_9_UH6jpoMoO2rBUm0XNby_M";
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+window.supabase = supabase;
+
+
+// ===============================
+// CARREGAR USUÁRIO LOGADO
+// ===============================
+let usuario = null;
+
+async function carregarUsuario() {
+  const { data: sessionData } = await supabase.auth.getSession();
+
+  if (!sessionData.session) {
+    window.location.href = "index.html";
+    return;
+  }
+
+  usuario = sessionData.session.user;
+  document.getElementById("userInfo").innerText = usuario.email;
+}
+
+carregarUsuario();
+
+
+// ===============================
+// PEGAR LOCALIZAÇÃO
+// ===============================
+function pegarLocalizacao() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve("Localização indisponível");
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve(`${pos.coords.latitude}, ${pos.coords.longitude}`),
+      () => resolve("Localização negada")
+    );
+  });
+}
+
+
+// ===============================
+// REGISTRAR ENTRADA E SAÍDA
+// ===============================
+document.getElementById("btnPonto").addEventListener("click", async () => {
+  if (!usuario) return;
+
+  const hoje = new Date().toISOString().split("T")[0];
+  const agora = new Date().toLocaleTimeString("pt-BR", { hour12: false });
+  const local = await pegarLocalizacao();
+
+  // Buscar últimos registros de hoje
+  console.log("========== DEBUG ==========");
+  console.log("User ID enviado:", usuario.id);
+  console.log("Data enviada:", hoje);
+
+  const { data: registros, error } = await supabase
+    .from("pontos")
+    .select("*")
+    .eq("user_id", usuario.id)
+    .eq("data", hoje)
+    .order("id", { ascending: false })
+    .limit(1);
+
+  if (error) {
+    alert("Erro ao consultar registros: " + error.message);
+    return;
+  }
+
+  const ultimo = registros?.[0];
+
+  // ======================
+  // SE NÃO TEM REGISTRO → ENTRADA
+  // ======================
+  if (!ultimo || (ultimo.hora_entrada && ultimo.hora_saida)) {
+    const { error } = await supabase
+      .from("pontos")
+      .insert({
+        user_id: usuario.id,
+        data: hoje,
+        hora_entrada: agora,
+        localizacao: local
+      });
+
+    if (error) {
+      alert("Erro ao registrar entrada!");
+      return;
+    }
+
+    document.getElementById("mensagem").innerText = "Entrada registrada!";
+    carregarHistorico();
+    return;
+  }
+
+  // ======================
+  // SE TEM ENTRADA SEM SAÍDA → REGISTRAR SAÍDA
+  // ======================
+  if (ultimo.hora_entrada && !ultimo.hora_saida) {
+    const h1 = new Date(`${hoje}T${ultimo.hora_entrada}`);
+    const h2 = new Date(`${hoje}T${agora}`);
+    const total = ((h2 - h1) / 1000 / 60 / 60).toFixed(2);
+
+    const { error } = await supabase
+      .from("pontos")
+      .update({
+        hora_saida: agora,
+        total_horas: total
+      })
+      .eq("id", ultimo.id);
+
+    if (error) {
+      alert("Erro ao registrar saída!");
+      return;
+    }
+
+    document.getElementById("mensagem").innerText = "Saída registrada!";
+    carregarHistorico();
+  }
+});
+
+
+// ===============================
+// CARREGAR HISTÓRICO
+// ===============================
+async function carregarHistorico() {
+  if (!usuario) return;
+
+  const { data, error } = await supabase
+    .from("pontos")
+    .select("*")
+    .eq("user_id", usuario.id)
+    .order("id", { ascending: false });
+
+  if (error) return;
+
+  const tbody = document.querySelector("#tabelaPontos tbody");
+  tbody.innerHTML = "";
+
+  data.forEach((p) => {
+    const linha = document.createElement("tr");
+
+    linha.innerHTML = `
+      <td>${p.data}</td>
+      <td>${p.hora_entrada ?? "-"}</td>
+      <td>${p.hora_saida ?? "-"}</td>
+      <td>${p.localizacao ?? "-"}</td>
+      <td>${p.total_horas ?? "-"}</td>
+      <td><button class="btnExcluir" data-id="${p.id}">Excluir</button></td>
+    `;
+
+    tbody.appendChild(linha);
+  });
+
+  document.querySelectorAll(".btnExcluir").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.getAttribute("data-id");
+      await supabase.from("pontos").delete().eq("id", id);
+      carregarHistorico();
+    });
+  });
+}
+
+carregarHistorico();
+
+
+// ===============================
+// LOGOUT
+// ===============================
+document.getElementById("btnLogout").addEventListener("click", async () => {
+  await supabase.auth.signOut();
+  window.location.href = "index.html";
+});
